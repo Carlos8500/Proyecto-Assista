@@ -20,7 +20,11 @@ import {
   verifyPassword,
 } from "./auth.ts";
 import type { RolUsuario, UsuarioSesion } from "./auth.ts";
+import { crearRouterAsistente } from "./asistente.ts";
+import { obtenerNegocioConfiguradoId } from "./config.ts";
 import { pool } from "./db.ts";
+import { crearRouterPedidos } from "./pedidos.ts";
+import { crearRouterTelefonia } from "./telefonia.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -115,11 +119,6 @@ function obtenerCodigoInvitacionEsperado(): string {
   return configurado && configurado.length > 0
     ? configurado
     : DEFAULT_INVITE_CODE;
-}
-
-function obtenerNegocioConfiguradoId(): number {
-  const raw = Number(process.env.DEMO_NEGOCIO_ID);
-  return Number.isInteger(raw) && raw >= 1 ? raw : 1;
 }
 
 app.get("/api/health", (_request, response) => {
@@ -651,6 +650,10 @@ app.patch("/api/productos/:id", async (request, response) => {
     response.status(500).json({ message: "No se pudo actualizar el producto" });
   }
 });
+
+app.use("/api/pedidos", crearRouterPedidos(obtenerUsuarioDeSesion));
+app.use("/api/asistente", crearRouterAsistente());
+app.use("/api/telefonia", crearRouterTelefonia());
 
 const frontendDistPath = path.resolve(__dirname, "../../frontend/dist");
 if (fs.existsSync(frontendDistPath)) {

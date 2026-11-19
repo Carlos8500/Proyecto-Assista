@@ -1,0 +1,26 @@
+services:
+  db:
+    image: postgres:18-alpine
+    container_name: assista-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-assista2026}
+      POSTGRES_DB: ${POSTGRES_DB:-assista}
+    ports:
+      - "${POSTGRES_PORT:-5435}:5432"
+    volumes:
+      - assista_pgdata:/var/lib/postgresql
+      - ./backend/db/migrations/001_crear_negocios_y_productos.sql:/docker-entrypoint-initdb.d/01_001_crear_negocios_y_productos.sql:ro
+      - ./backend/db/migrations/002_crear_usuarios_y_sesiones.sql:/docker-entrypoint-initdb.d/02_002_crear_usuarios_y_sesiones.sql:ro
+      - ./backend/db/migrations/003_crear_pedidos.sql:/docker-entrypoint-initdb.d/03_003_crear_pedidos.sql:ro
+      - ./backend/db/seeds/001_mesa_clara.sql:/docker-entrypoint-initdb.d/10_001_mesa_clara.sql:ro
+      - ./backend/db/seeds/002_usuarios_prueba.sql:/docker-entrypoint-initdb.d/11_002_usuarios_prueba.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-assista}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  assista_pgdata:
