@@ -10,7 +10,6 @@ export type UsuarioAutenticado = {
     id: number;
     nombre: string;
   };
-  sessionToken?: string;
 };
 
 export function obtenerIniciales(nombre: string): string {

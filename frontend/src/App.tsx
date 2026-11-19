@@ -14,55 +14,6 @@ type Producto = {
   disponible: boolean;
 };
 
-const STORAGE_TOKEN_KEY = "assista_session_token";
-
-function leerTokenRespaldo(): string | null {
-  try {
-    return (
-      window.localStorage.getItem(STORAGE_TOKEN_KEY) ??
-      window.sessionStorage.getItem(STORAGE_TOKEN_KEY)
-    );
-  } catch {
-    return null;
-  }
-}
-
-function guardarTokenRespaldo(token: string | undefined, recordar: boolean) {
-  if (!token) return;
-  try {
-    if (recordar) {
-      window.localStorage.setItem(STORAGE_TOKEN_KEY, token);
-      window.sessionStorage.removeItem(STORAGE_TOKEN_KEY);
-    } else {
-      window.sessionStorage.setItem(STORAGE_TOKEN_KEY, token);
-      window.localStorage.removeItem(STORAGE_TOKEN_KEY);
-    }
-  } catch {
-    // Ignorar errores de almacenamiento privado
-  }
-}
-
-function limpiarTokenRespaldo() {
-  try {
-    window.localStorage.removeItem(STORAGE_TOKEN_KEY);
-    window.sessionStorage.removeItem(STORAGE_TOKEN_KEY);
-  } catch {
-    // Ignorar errores de almacenamiento privado
-  }
-}
-
-function crearHeadersConSesion(conJson = false): HeadersInit {
-  const headers: Record<string, string> = {};
-  if (conJson) {
-    headers["Content-Type"] = "application/json";
-  }
-  const token = leerTokenRespaldo();
-  if (token) {
-    headers["x-session-token"] = token;
-  }
-  return headers;
-}
-
 const formatoPrecio = new Intl.NumberFormat("es-MX", {
   style: "currency",
   currency: "MXN",
@@ -87,18 +38,15 @@ export default function App() {
       try {
         const respuesta = await fetch("/api/auth/me?silent=1", {
           credentials: "include",
-          headers: crearHeadersConSesion(),
         });
 
         if (!respuesta.ok) {
-          limpiarTokenRespaldo();
           setUsuario(null);
           return;
         }
 
         const datos = await respuesta.json();
         if (datos && datos.autenticado === false) {
-          limpiarTokenRespaldo();
           setUsuario(null);
           return;
         }
@@ -133,16 +81,13 @@ export default function App() {
         const [resNegocio, resProductos] = await Promise.all([
           fetch("/api/negocio", {
             credentials: "include",
-            headers: crearHeadersConSesion(),
           }),
           fetch("/api/productos", {
             credentials: "include",
-            headers: crearHeadersConSesion(),
           }),
         ]);
 
         if (resNegocio.status === 401 || resProductos.status === 401) {
-          limpiarTokenRespaldo();
           setUsuario(null);
           return;
         }
@@ -169,11 +114,7 @@ export default function App() {
     void cargarDatosNegocio();
   }, [usuario]);
 
-  function manejarAutenticado(
-    nuevoUsuario: UsuarioAutenticado,
-    recordar: boolean,
-  ) {
-    guardarTokenRespaldo(nuevoUsuario.sessionToken, recordar);
+  function manejarAutenticado(nuevoUsuario: UsuarioAutenticado) {
     setMostrarFormulario(false);
     setProductoEditando(null);
     setError("");
@@ -187,12 +128,10 @@ export default function App() {
       await fetch("/api/auth/logout", {
         method: "POST",
         credentials: "include",
-        headers: crearHeadersConSesion(),
       });
     } catch {
       // Continuar cerrando sesión localmente
     } finally {
-      limpiarTokenRespaldo();
       setCerrandoSesion(false);
       setMostrarFormulario(false);
       setProductoEditando(null);
@@ -210,14 +149,13 @@ export default function App() {
       const respuesta = await fetch(`/api/productos/${producto.id}`, {
         method: "PATCH",
         credentials: "include",
-        headers: crearHeadersConSesion(true),
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           disponible: !producto.disponible,
         }),
       });
 
       if (respuesta.status === 401) {
-        limpiarTokenRespaldo();
         setUsuario(null);
         return;
       }
@@ -253,12 +191,11 @@ export default function App() {
     const respuesta = await fetch("/api/productos", {
       method: "POST",
       credentials: "include",
-      headers: crearHeadersConSesion(true),
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(datos),
     });
 
     if (respuesta.status === 401) {
-      limpiarTokenRespaldo();
       setUsuario(null);
       return;
     }
@@ -283,12 +220,11 @@ export default function App() {
     const respuesta = await fetch(`/api/productos/${productoEditando.id}`, {
       method: "PATCH",
       credentials: "include",
-      headers: crearHeadersConSesion(true),
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(datos),
     });
 
     if (respuesta.status === 401) {
-      limpiarTokenRespaldo();
       setUsuario(null);
       return;
     }

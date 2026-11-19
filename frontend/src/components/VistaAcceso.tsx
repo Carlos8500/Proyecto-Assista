@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
-import type { RolUsuario, UsuarioAutenticado } from "../types/auth";
+import type { UsuarioAutenticado } from "../types/auth";
 
 type Props = {
-  onAutenticado: (usuario: UsuarioAutenticado, recordar: boolean) => void;
+  onAutenticado: (usuario: UsuarioAutenticado) => void;
 };
 
 function IconoOjo({ visible }: { visible: boolean }) {
@@ -100,13 +100,13 @@ export default function VistaAcceso({ onAutenticado }: Props) {
   const [nombreCompleto, setNombreCompleto] = useState("");
   const [regUsername, setRegUsername] = useState("");
   const [correo, setCorreo] = useState("");
-  const [rol, setRol] = useState<RolUsuario>("empleado");
+  const [codigoInvitacion, setCodigoInvitacion] = useState("");
   const [regPassword, setRegPassword] = useState("");
   const [regConfirmar, setRegConfirmar] = useState("");
   const [mostrarRegPassword, setMostrarRegPassword] = useState(false);
   const [mostrarRegConfirmar, setMostrarRegConfirmar] = useState(false);
   const [estadoUsername, setEstadoUsername] = useState<
-    "vacio" | "verificando" | "disponible" | "ocupado" | "invalido"
+    "vacio" | "verificando" | "disponible" | "ocupado" | "invalido" | "error"
   >("vacio");
 
   // Estado compartido
@@ -130,9 +130,10 @@ export default function VistaAcceso({ onAutenticado }: Props) {
       try {
         const res = await fetch(
           `/api/auth/check-username?username=${encodeURIComponent(limpio)}`,
+          { credentials: "include" },
         );
         if (!res.ok) {
-          setEstadoUsername("vacio");
+          setEstadoUsername("error");
           return;
         }
         const data: { disponible: boolean; valido: boolean } = await res.json();
@@ -142,7 +143,7 @@ export default function VistaAcceso({ onAutenticado }: Props) {
           setEstadoUsername(data.disponible ? "disponible" : "ocupado");
         }
       } catch {
-        setEstadoUsername("vacio");
+        setEstadoUsername("error");
       }
     }, 220);
 
@@ -185,7 +186,7 @@ export default function VistaAcceso({ onAutenticado }: Props) {
         );
       }
 
-      onAutenticado(datos as UsuarioAutenticado, recordarme);
+      onAutenticado(datos as UsuarioAutenticado);
     } catch (err) {
       setError(
         err instanceof Error
@@ -204,9 +205,12 @@ export default function VistaAcceso({ onAutenticado }: Props) {
     const nombreLimpio = nombreCompleto.trim();
     const usernameLimpio = regUsername.trim().toLowerCase();
     const correoLimpio = correo.trim().toLowerCase();
+    const codigoLimpio = codigoInvitacion.trim();
 
-    if (!nombreLimpio || !usernameLimpio || !correoLimpio) {
-      setError("Completa tu nombre, usuario y correo electrónico.");
+    if (!nombreLimpio || !usernameLimpio || !correoLimpio || !codigoLimpio) {
+      setError(
+        "Completa tu nombre, usuario, correo electrónico y código de invitación.",
+      );
       return;
     }
 
@@ -232,7 +236,7 @@ export default function VistaAcceso({ onAutenticado }: Props) {
           nombre: nombreLimpio,
           username: usernameLimpio,
           correo: correoLimpio,
-          rol,
+          codigoInvitacion: codigoLimpio,
           password: regPassword,
         }),
       });
@@ -242,7 +246,7 @@ export default function VistaAcceso({ onAutenticado }: Props) {
         throw new Error(datos?.message ?? "No se pudo crear la cuenta.");
       }
 
-      onAutenticado(datos as UsuarioAutenticado, true);
+      onAutenticado(datos as UsuarioAutenticado);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "No se pudo crear la cuenta.",
@@ -406,7 +410,8 @@ export default function VistaAcceso({ onAutenticado }: Props) {
             <p className="etiqueta-seccion">NUEVO EN MESA CLARA</p>
             <h1 className="titulo-acceso">Crea tu cuenta</h1>
             <p className="subtitulo-acceso">
-              Completa tus datos. Después verificarás tu correo.
+              Completa tus datos con el código de invitación para unirte al
+              equipo.
             </p>
 
             <form
@@ -438,7 +443,9 @@ export default function VistaAcceso({ onAutenticado }: Props) {
                 />
                 <p
                   className={`ayuda-campo-acceso ${
-                    estadoUsername === "ocupado" || estadoUsername === "invalido"
+                    estadoUsername === "ocupado" ||
+                    estadoUsername === "invalido" ||
+                    estadoUsername === "error"
                       ? "texto-error-campo"
                       : ""
                   }`}
@@ -449,9 +456,12 @@ export default function VistaAcceso({ onAutenticado }: Props) {
                     "✕ Ese nombre de usuario ya está ocupado."}
                   {estadoUsername === "invalido" &&
                     "Usa al menos 3 caracteres (letras, números, puntos o guiones)."}
-                  {(estadoUsername === "vacio" ||
-                    estadoUsername === "verificando") &&
-                    "✓ Usuario disponible. Cada nombre de usuario es único."}
+                  {estadoUsername === "verificando" &&
+                    "Verificando disponibilidad…"}
+                  {estadoUsername === "error" &&
+                    "No se pudo verificar la disponibilidad en la base de datos."}
+                  {estadoUsername === "vacio" &&
+                    "Cada nombre de usuario es único (letras, números, puntos o guiones)."}
                 </p>
 
                 <label htmlFor="registro-correo">Correo electrónico</label>
@@ -465,48 +475,22 @@ export default function VistaAcceso({ onAutenticado }: Props) {
                   required
                 />
                 <p className="ayuda-campo-acceso">
-                  Solo para verificar tu cuenta y recuperar el acceso.
+                  Se utilizará para identificar tu cuenta y recuperar el acceso.
                 </p>
 
-                <label id="etiqueta-rol">Rol</label>
-                <div
-                  className="selector-rol-acceso"
-                  role="radiogroup"
-                  aria-labelledby="etiqueta-rol"
-                >
-                  <label
-                    className={`opcion-rol-acceso ${
-                      rol === "empleado" ? "seleccionado" : ""
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="rol-usuario"
-                      value="empleado"
-                      checked={rol === "empleado"}
-                      onChange={() => setRol("empleado")}
-                    />
-                    <span>Empleado</span>
-                  </label>
-
-                  <label
-                    className={`opcion-rol-acceso ${
-                      rol === "dueno" ? "seleccionado" : ""
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="rol-usuario"
-                      value="dueno"
-                      checked={rol === "dueno"}
-                      onChange={() => setRol("dueno")}
-                    />
-                    <span>Dueño</span>
-                  </label>
-                </div>
+                <label htmlFor="registro-codigo">Código de invitación</label>
+                <input
+                  id="registro-codigo"
+                  type="text"
+                  placeholder="MESA-CLARA-2026"
+                  value={codigoInvitacion}
+                  onChange={(e) => setCodigoInvitacion(e.target.value)}
+                  maxLength={80}
+                  required
+                />
                 <p className="ayuda-campo-acceso">
-                  Empleado: consulta, toma y elimina pedidos con confirmación.
-                  Dueño: además, administra el menú.
+                  Solicita este código al dueño del negocio para registrarte
+                  como empleado.
                 </p>
 
                 <div className="fila-passwords-registro">
@@ -587,9 +571,7 @@ export default function VistaAcceso({ onAutenticado }: Props) {
                 {error && <p role="alert">{error}</p>}
 
                 <button type="submit" className="boton-primario-acceso">
-                  {cargando
-                    ? "Creando cuenta…"
-                    : "Crear cuenta y verificar correo"}
+                  {cargando ? "Creando cuenta…" : "Crear cuenta"}
                 </button>
               </fieldset>
             </form>

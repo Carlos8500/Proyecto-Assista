@@ -6,7 +6,6 @@ import type { Request, Response } from "express";
 import {
   buildLogoutCookie,
   buildSessionCookie,
-  esRolValido,
   generarTokenSesion,
   hashPassword,
   normalizarUsername,
@@ -44,11 +43,6 @@ function extraerTokenSesion(request: Request): string | null {
   const cookies = parseCookies(request.headers.cookie);
   if (cookies[SESSION_COOKIE_NAME]) {
     return cookies[SESSION_COOKIE_NAME];
-  }
-
-  const headerToken = request.headers["x-session-token"];
-  if (typeof headerToken === "string" && headerToken.trim()) {
-    return headerToken.trim();
   }
 
   return null;
@@ -95,7 +89,7 @@ async function iniciarSesionUsuario(
   request: Request,
   usuario: UsuarioSesion,
   recordarme: boolean,
-) {
+): Promise<void> {
   const token = generarTokenSesion();
   const duracionMs = recordarme
     ? SESSION_DURATION_REMEMBER_MS
@@ -112,8 +106,20 @@ async function iniciarSesionUsuario(
     "Set-Cookie",
     buildSessionCookie(token, duracionMs, esContextoSeguro(request)),
   );
+}
 
-  return token;
+const DEFAULT_INVITE_CODE = "MESA-CLARA-2026";
+
+function obtenerCodigoInvitacionEsperado(): string {
+  const configurado = process.env.CODIGO_INVITACION?.trim();
+  return configurado && configurado.length > 0
+    ? configurado
+    : DEFAULT_INVITE_CODE;
+}
+
+function obtenerNegocioConfiguradoId(): number {
+  const raw = Number(process.env.DEMO_NEGOCIO_ID);
+  return Number.isInteger(raw) && raw >= 1 ? raw : 1;
 }
 
 app.get("/api/health", (_request, response) => {
@@ -132,7 +138,7 @@ app.get("/api/auth/check-username", async (request, response) => {
   try {
     const { rows } = await pool.query(
       "SELECT id, username, correo FROM usuarios WHERE LOWER(username) = LOWER($1)",
-      [username, ""],
+      [username],
     );
     response.json({ disponible: rows.length === 0, valido: true });
   } catch (error) {
@@ -194,17 +200,14 @@ app.post("/api/auth/login", async (request, response) => {
       },
     };
 
-    const sessionToken = await iniciarSesionUsuario(
+    await iniciarSesionUsuario(
       response,
       request,
       usuario,
       Boolean(recordarme),
     );
 
-    response.json({
-      ...usuario,
-      sessionToken,
-    });
+    response.json(usuario);
   } catch (error) {
     console.error("Error en inicio de sesión:", error);
     response.status(500).json({
@@ -214,8 +217,31 @@ app.post("/api/auth/login", async (request, response) => {
 });
 
 app.post("/api/auth/register", async (request, response) => {
-  const { nombre, username, correo, rol, password, negocioId } =
-    request.body ?? {};
+  const {
+    nombre,
+    username,
+    correo,
+    password,
+    codigoInvitacion,
+    rol,
+    negocioId,
+  } = request.body ?? {};
+
+  if (rol !== undefined && rol !== "empleado") {
+    response.status(403).json({
+      message:
+        "No está permitido autoasignarse el rol de dueño en el registro público.",
+    });
+    return;
+  }
+
+  if (negocioId !== undefined) {
+    response.status(403).json({
+      message:
+        "No está permitido vincularse libremente a un negocio sin autorización.",
+    });
+    return;
+  }
 
   const nombreLimpio = typeof nombre === "string" ? nombre.trim() : "";
   const usernameLimpio =
@@ -223,10 +249,37 @@ app.post("/api/auth/register", async (request, response) => {
   const correoLimpio =
     typeof correo === "string" ? correo.trim().toLowerCase() : "";
   const clave = typeof password === "string" ? password : "";
-  const negocioDestino =
-    typeof negocioId === "number" && Number.isInteger(negocioId) && negocioId >= 1
-      ? negocioId
-      : 1;
+  const codigoLimpio =
+    typeof codigoInvitacion === "string" ? codigoInvitacion.trim() : "";
+
+  let sesionActual: UsuarioSesion | null = null;
+  try {
+    sesionActual = await obtenerUsuarioDeSesion(request);
+  } catch (error) {
+    console.error("Error al verificar sesión en registro:", error);
+    response.status(500).json({
+      message: "No se pudo verificar la autorización para el registro.",
+    });
+    return;
+  }
+
+  const autorizadoPorDueno = sesionActual?.rol === "dueno";
+  const codigoEsperado = obtenerCodigoInvitacionEsperado();
+  const autorizadoPorCodigo =
+    codigoLimpio.length > 0 && codigoLimpio === codigoEsperado;
+
+  if (!autorizadoPorDueno && !autorizadoPorCodigo) {
+    response.status(403).json({
+      message:
+        "Se requiere un código de invitación válido proporcionado por el dueño del negocio.",
+    });
+    return;
+  }
+
+  const negocioDestino = autorizadoPorDueno
+    ? sesionActual!.negocio.id
+    : obtenerNegocioConfiguradoId();
+  const rolAsignado: RolUsuario = "empleado";
 
   if (!nombreLimpio || nombreLimpio.length > 120) {
     response.status(400).json({
@@ -246,13 +299,6 @@ app.post("/api/auth/register", async (request, response) => {
   if (!validarCorreo(correoLimpio)) {
     response.status(400).json({
       message: "Ingresa un correo electrónico válido.",
-    });
-    return;
-  }
-
-  if (!esRolValido(rol)) {
-    response.status(400).json({
-      message: "Selecciona un rol válido (empleado o dueño).",
     });
     return;
   }
@@ -293,7 +339,7 @@ app.post("/api/auth/register", async (request, response) => {
 
     if (negocioRes.rows.length === 0) {
       response.status(400).json({
-        message: "El negocio seleccionado no existe.",
+        message: "El negocio configurado para la invitación no existe.",
       });
       return;
     }
@@ -309,7 +355,7 @@ app.post("/api/auth/register", async (request, response) => {
         usernameLimpio,
         correoLimpio,
         passwordHash,
-        rol,
+        rolAsignado,
       ],
     );
 
@@ -321,25 +367,28 @@ app.post("/api/auth/register", async (request, response) => {
       nombre: String(creado.nombre),
       username: String(creado.username),
       correo: String(creado.correo),
-      rol: creado.rol as RolUsuario,
+      rol: "empleado",
       negocio: {
         id: Number(negocio.id),
         nombre: String(negocio.nombre),
       },
     };
 
-    const sessionToken = await iniciarSesionUsuario(
+    await iniciarSesionUsuario(
       response,
       request,
       usuario,
       true,
     );
 
-    response.status(201).json({
-      ...usuario,
-      sessionToken,
-    });
+    response.status(201).json(usuario);
   } catch (error) {
+    if ((error as { code?: string })?.code === "23505") {
+      response.status(409).json({
+        message: "El nombre de usuario o correo electrónico ya está registrado.",
+      });
+      return;
+    }
     console.error("Error al registrar usuario:", error);
     response.status(500).json({
       message: "No se pudo crear la cuenta. Intenta nuevamente.",
