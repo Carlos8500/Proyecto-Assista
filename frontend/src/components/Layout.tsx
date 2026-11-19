@@ -2,10 +2,14 @@ import type { ReactNode } from "react";
 import { formatearRol, obtenerIniciales } from "../types/auth";
 import type { UsuarioAutenticado } from "../types/auth";
 
+export type SeccionApp = "menu" | "pedidos";
+
 type Props = {
   nombreNegocio: string;
   usuario: UsuarioAutenticado;
   cerrandoSesion?: boolean;
+  seccionActiva?: SeccionApp;
+  onCambiarSeccion?: (seccion: SeccionApp) => void;
   onCerrarSesion: () => void;
   children: ReactNode;
 };
@@ -43,6 +47,8 @@ export default function Layout({
   nombreNegocio,
   usuario,
   cerrandoSesion = false,
+  seccionActiva = "menu",
+  onCambiarSeccion,
   onCerrarSesion,
   children,
 }: Props) {
@@ -75,19 +81,24 @@ export default function Layout({
           <p className="etiqueta-navegacion">Espacio de trabajo</p>
 
           <button
-            className="enlace-menu opcion-pendiente"
+            className={`enlace-menu ${seccionActiva === "pedidos" ? "activo" : ""}`}
             type="button"
-            disabled
-            title="Disponible en una próxima entrega"
+            aria-current={seccionActiva === "pedidos" ? "page" : undefined}
+            onClick={() => onCambiarSeccion?.("pedidos")}
           >
             <Icono tipo="pedidos" />
             Pedidos
           </button>
 
-          <a className="enlace-menu activo" href="/" aria-current="page">
+          <button
+            className={`enlace-menu ${seccionActiva === "menu" ? "activo" : ""}`}
+            type="button"
+            aria-current={seccionActiva === "menu" ? "page" : undefined}
+            onClick={() => onCambiarSeccion?.("menu")}
+          >
             <Icono tipo="menu" />
             Administrar menú
-          </a>
+          </button>
         </nav>
 
         <footer className="pie-lateral">
@@ -117,7 +128,10 @@ export default function Layout({
 
       <div className="contenido-app">
         <header className="barra-superior">
-          <span>{negocioMostrado || "Assista"} / Administrar menú</span>
+          <span>
+            {negocioMostrado || "Assista"} /{" "}
+            {seccionActiva === "pedidos" ? "Pedidos" : "Administrar menú"}
+          </span>
 
           <span className="fecha-actual">
             <Icono tipo="calendario" />

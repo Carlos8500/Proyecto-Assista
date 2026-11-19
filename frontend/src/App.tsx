@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import FormularioProducto from "./components/FormularioProducto";
 import type { DatosProducto } from "./components/FormularioProducto";
 import Layout from "./components/Layout";
+import type { SeccionApp } from "./components/Layout";
 import ModalEditarProducto from "./components/ModalEditarProducto";
 import VistaAcceso from "./components/VistaAcceso";
+import VistaPedidos from "./components/VistaPedidos";
 import type { UsuarioAutenticado } from "./types/auth";
 
 type Producto = {
@@ -32,6 +34,7 @@ export default function App() {
     null,
   );
   const [nombreNegocio, setNombreNegocio] = useState("");
+  const [seccionActiva, setSeccionActiva] = useState<SeccionApp>("menu");
 
   useEffect(() => {
     async function verificarSesionInicial() {
@@ -263,12 +266,40 @@ export default function App() {
   const esDueno = usuario.rol === "dueno";
   const negocioMostrado = nombreNegocio || usuario.negocio.nombre;
 
+  function cambiarSeccion(nuevaSeccion: SeccionApp) {
+    setMostrarFormulario(false);
+    setProductoEditando(null);
+    setError("");
+    setSeccionActiva(nuevaSeccion);
+  }
+
+  if (seccionActiva === "pedidos") {
+    return (
+      <Layout
+        nombreNegocio={negocioMostrado}
+        usuario={usuario}
+        cerrandoSesion={cerrandoSesion}
+        seccionActiva={seccionActiva}
+        onCambiarSeccion={cambiarSeccion}
+        onCerrarSesion={cerrarSesion}
+      >
+        <VistaPedidos
+          nombreNegocio={negocioMostrado}
+          productos={productos ?? []}
+          onSesionExpirada={() => setUsuario(null)}
+        />
+      </Layout>
+    );
+  }
+
   if (mostrarFormulario && esDueno) {
     return (
       <Layout
         nombreNegocio={negocioMostrado}
         usuario={usuario}
         cerrandoSesion={cerrandoSesion}
+        seccionActiva={seccionActiva}
+        onCambiarSeccion={cambiarSeccion}
         onCerrarSesion={cerrarSesion}
       >
         <main>
@@ -303,6 +334,8 @@ export default function App() {
       nombreNegocio={negocioMostrado}
       usuario={usuario}
       cerrandoSesion={cerrandoSesion}
+      seccionActiva={seccionActiva}
+      onCambiarSeccion={cambiarSeccion}
       onCerrarSesion={cerrarSesion}
     >
       {productoEditando && esDueno && (
