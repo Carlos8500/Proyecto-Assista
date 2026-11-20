@@ -2,7 +2,11 @@ import { useEffect, useState } from "react";
 import FormularioProducto from "./components/FormularioProducto";
 import type { DatosProducto } from "./components/FormularioProducto";
 import Layout from "./components/Layout";
+import type { SeccionApp } from "./components/Layout";
 import ModalEditarProducto from "./components/ModalEditarProducto";
+import VistaAcceso from "./components/VistaAcceso";
+import VistaPedidos from "./components/VistaPedidos";
+import type { UsuarioAutenticado } from "./types/auth";
 
 type Producto = {
   id: number;
@@ -18,6 +22,10 @@ const formatoPrecio = new Intl.NumberFormat("es-MX", {
 });
 
 export default function App() {
+  const [usuario, setUsuario] = useState<UsuarioAutenticado | null>(null);
+  const [verificandoSesion, setVerificandoSesion] = useState(true);
+  const [cerrandoSesion, setCerrandoSesion] = useState(false);
+
   const [productos, setProductos] = useState<Producto[] | null>(null);
   const [error, setError] = useState("");
   const [actualizandoId, setActualizandoId] = useState<number | null>(null);
@@ -26,44 +34,115 @@ export default function App() {
     null,
   );
   const [nombreNegocio, setNombreNegocio] = useState("");
+  const [seccionActiva, setSeccionActiva] = useState<SeccionApp>("menu");
 
   useEffect(() => {
-    async function cargarNegocio() {
+    async function verificarSesionInicial() {
       try {
-        const respuesta = await fetch("/api/negocio");
+        const respuesta = await fetch("/api/auth/me?silent=1", {
+          credentials: "include",
+        });
 
         if (!respuesta.ok) {
-          throw new Error("No se pudo consultar el negocio");
+          setUsuario(null);
+          return;
         }
 
-        const negocio: { id: number; nombre: string } = await respuesta.json();
-        setNombreNegocio(negocio.nombre);
+        const datos = await respuesta.json();
+        if (datos && datos.autenticado === false) {
+          setUsuario(null);
+          return;
+        }
+
+        const sesion = datos as UsuarioAutenticado;
+        setUsuario(sesion);
+        setNombreNegocio(sesion.negocio.nombre);
       } catch {
-        setNombreNegocio("");
+        setUsuario(null);
+      } finally {
+        setVerificandoSesion(false);
       }
     }
 
-    void cargarNegocio();
+    void verificarSesionInicial();
   }, []);
 
   useEffect(() => {
-    async function cargarProductos() {
-      try {
-        const respuesta = await fetch("/api/productos");
+    if (!usuario) {
+      setProductos(null);
+      setNombreNegocio("");
+      return;
+    }
 
-        if (!respuesta.ok) {
+    const usuarioActual = usuario;
+
+    async function cargarDatosNegocio() {
+      setError("");
+      setProductos(null);
+
+      try {
+        const [resNegocio, resProductos] = await Promise.all([
+          fetch("/api/negocio", {
+            credentials: "include",
+          }),
+          fetch("/api/productos", {
+            credentials: "include",
+          }),
+        ]);
+
+        if (resNegocio.status === 401 || resProductos.status === 401) {
+          setUsuario(null);
+          return;
+        }
+
+        if (resNegocio.ok) {
+          const negocio: { id: number; nombre: string } =
+            await resNegocio.json();
+          setNombreNegocio(negocio.nombre);
+        } else {
+          setNombreNegocio(usuarioActual.negocio.nombre);
+        }
+
+        if (!resProductos.ok) {
           throw new Error("No se pudo cargar el menú");
         }
 
-        const datos: Producto[] = await respuesta.json();
-        setProductos(datos);
+        const datosProductos: Producto[] = await resProductos.json();
+        setProductos(datosProductos);
       } catch {
         setError("No se pudieron cargar los productos.");
       }
     }
 
-    void cargarProductos();
-  }, []);
+    void cargarDatosNegocio();
+  }, [usuario]);
+
+  function manejarAutenticado(nuevoUsuario: UsuarioAutenticado) {
+    setMostrarFormulario(false);
+    setProductoEditando(null);
+    setError("");
+    setNombreNegocio(nuevoUsuario.negocio.nombre);
+    setUsuario(nuevoUsuario);
+  }
+
+  async function cerrarSesion() {
+    setCerrandoSesion(true);
+    try {
+      await fetch("/api/auth/logout", {
+        method: "POST",
+        credentials: "include",
+      });
+    } catch {
+      // Continuar cerrando sesión localmente
+    } finally {
+      setCerrandoSesion(false);
+      setMostrarFormulario(false);
+      setProductoEditando(null);
+      setProductos(null);
+      setError("");
+      setUsuario(null);
+    }
+  }
 
   async function cambiarDisponibilidad(producto: Producto) {
     setActualizandoId(producto.id);
@@ -72,16 +151,23 @@ export default function App() {
     try {
       const respuesta = await fetch(`/api/productos/${producto.id}`, {
         method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           disponible: !producto.disponible,
         }),
       });
 
+      if (respuesta.status === 401) {
+        setUsuario(null);
+        return;
+      }
+
       if (!respuesta.ok) {
-        throw new Error("No se pudo actualizar la disponibilidad");
+        const detalle = await respuesta.json().catch(() => null);
+        throw new Error(
+          detalle?.message ?? "No se pudo actualizar la disponibilidad",
+        );
       }
 
       const actualizado: Producto = await respuesta.json();
@@ -93,8 +179,12 @@ export default function App() {
               item.id === actualizado.id ? actualizado : item,
             ),
       );
-    } catch {
-      setError("No se pudo actualizar la disponibilidad. Intenta de nuevo.");
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "No se pudo actualizar la disponibilidad. Intenta de nuevo.",
+      );
     } finally {
       setActualizandoId(null);
     }
@@ -103,11 +193,15 @@ export default function App() {
   async function agregarProducto(datos: DatosProducto) {
     const respuesta = await fetch("/api/productos", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(datos),
     });
+
+    if (respuesta.status === 401) {
+      setUsuario(null);
+      return;
+    }
 
     if (!respuesta.ok) {
       const detalle = await respuesta.json().catch(() => null);
@@ -128,11 +222,15 @@ export default function App() {
 
     const respuesta = await fetch(`/api/productos/${productoEditando.id}`, {
       method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(datos),
     });
+
+    if (respuesta.status === 401) {
+      setUsuario(null);
+      return;
+    }
 
     if (!respuesta.ok) {
       const detalle = await respuesta.json().catch(() => null);
@@ -153,9 +251,57 @@ export default function App() {
     setProductoEditando(null);
   }
 
-  if (mostrarFormulario) {
+  if (verificandoSesion) {
     return (
-      <Layout nombreNegocio={nombreNegocio}>
+      <div className="pantalla-cargando-sesion">
+        <p>Verificando sesión en Assista…</p>
+      </div>
+    );
+  }
+
+  if (!usuario) {
+    return <VistaAcceso onAutenticado={manejarAutenticado} />;
+  }
+
+  const esDueno = usuario.rol === "dueno";
+  const negocioMostrado = nombreNegocio || usuario.negocio.nombre;
+
+  function cambiarSeccion(nuevaSeccion: SeccionApp) {
+    setMostrarFormulario(false);
+    setProductoEditando(null);
+    setError("");
+    setSeccionActiva(nuevaSeccion);
+  }
+
+  if (seccionActiva === "pedidos") {
+    return (
+      <Layout
+        nombreNegocio={negocioMostrado}
+        usuario={usuario}
+        cerrandoSesion={cerrandoSesion}
+        seccionActiva={seccionActiva}
+        onCambiarSeccion={cambiarSeccion}
+        onCerrarSesion={cerrarSesion}
+      >
+        <VistaPedidos
+          nombreNegocio={negocioMostrado}
+          productos={productos ?? []}
+          onSesionExpirada={() => setUsuario(null)}
+        />
+      </Layout>
+    );
+  }
+
+  if (mostrarFormulario && esDueno) {
+    return (
+      <Layout
+        nombreNegocio={negocioMostrado}
+        usuario={usuario}
+        cerrandoSesion={cerrandoSesion}
+        seccionActiva={seccionActiva}
+        onCambiarSeccion={cambiarSeccion}
+        onCerrarSesion={cerrarSesion}
+      >
         <main>
           <button
             className="boton-volver"
@@ -184,9 +330,15 @@ export default function App() {
   }
 
   return (
-    <Layout nombreNegocio={nombreNegocio}>
-
-      {productoEditando && (
+    <Layout
+      nombreNegocio={negocioMostrado}
+      usuario={usuario}
+      cerrandoSesion={cerrandoSesion}
+      seccionActiva={seccionActiva}
+      onCambiarSeccion={cambiarSeccion}
+      onCerrarSesion={cerrarSesion}
+    >
+      {productoEditando && esDueno && (
         <ModalEditarProducto
           key={productoEditando.id}
           producto={productoEditando}
@@ -200,25 +352,31 @@ export default function App() {
             <p className="etiqueta-seccion">Administración del menú</p>
 
             <h1>
-              {nombreNegocio ? `La carta de ${nombreNegocio}` : "Administrar menú"}
+              {negocioMostrado
+                ? `La carta de ${negocioMostrado}`
+                : "Administrar menú"}
             </h1>
 
             <p className="descripcion-seccion">
-              Consulta tus productos y agrega nuevas propuestas a la carta.
+              {esDueno
+                ? "Consulta tus productos y agrega nuevas propuestas a la carta."
+                : "Consulta los platillos y su disponibilidad actual en la carta del local."}
             </p>
           </div>
 
-          <button
-            type="button"
-            disabled={productos === null || actualizandoId !== null}
-            onClick={() => {
-              setError("");
-              setMostrarFormulario(true);
-            }}
-          >
-            <span aria-hidden="true">＋ </span>
-            Agregar producto
-          </button>
+          {esDueno && (
+            <button
+              type="button"
+              disabled={productos === null || actualizandoId !== null}
+              onClick={() => {
+                setError("");
+                setMostrarFormulario(true);
+              }}
+            >
+              <span aria-hidden="true">＋ </span>
+              Agregar producto
+            </button>
+          )}
         </div>
 
         <div className="resumen-menu">
@@ -230,7 +388,11 @@ export default function App() {
                 }`}
           </span>
 
-          <span className="nota-permisos">Administración del negocio</span>
+          <span className="nota-permisos">
+            {esDueno
+              ? "Administración del negocio · Dueño"
+              : "Solo lectura · Empleado"}
+          </span>
         </div>
 
         {error && <p role="alert">{error}</p>}
@@ -245,7 +407,7 @@ export default function App() {
                 <th>Descripción</th>
                 <th>Precio (MXN)</th>
                 <th>Disponibilidad</th>
-                <th>Acciones</th>
+                {esDueno && <th>Acciones</th>}
               </tr>
             </thead>
             <tbody>
@@ -255,38 +417,43 @@ export default function App() {
                   <td>{producto.descripcion}</td>
                   <td>{formatoPrecio.format(producto.precioCentavos / 100)}</td>
                   <td>{producto.disponible ? "Disponible" : "Agotado"}</td>
-                  <td>
-                    <button
-                      type="button"
-                      disabled={actualizandoId !== null}
-                      onClick={() => cambiarDisponibilidad(producto)}
-                    >
-                      {actualizandoId === producto.id
-                        ? "Guardando…"
-                        : producto.disponible
-                          ? "Marcar agotado"
-                          : "Habilitar"}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={actualizandoId !== null}
-                      onClick={() => {
-                        setError("");
-                        setProductoEditando(producto);
-                      }}
-                    >
-                      Editar
-                    </button>
-                  </td>
+                  {esDueno && (
+                    <td>
+                      <button
+                        type="button"
+                        disabled={actualizandoId !== null}
+                        onClick={() => cambiarDisponibilidad(producto)}
+                      >
+                        {actualizandoId === producto.id
+                          ? "Guardando…"
+                          : producto.disponible
+                            ? "Marcar agotado"
+                            : "Habilitar"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={actualizandoId !== null}
+                        onClick={() => {
+                          setError("");
+                          setProductoEditando(producto);
+                        }}
+                      >
+                        Editar
+                      </button>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
           </table>
         )}
         <p className="nota-menu">
-          Los productos disponibles podrán ofrecerse al recibir pedidos del negocio.
+          {esDueno
+            ? "Los productos disponibles podrán ofrecerse al recibir pedidos del negocio."
+            : "Como empleado puedes consultar la carta actualizada. Solo el dueño puede agregar o editar productos."}
         </p>
       </main>
     </Layout>
   );
 }
+

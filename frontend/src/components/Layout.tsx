@@ -1,7 +1,16 @@
 import type { ReactNode } from "react";
+import { formatearRol, obtenerIniciales } from "../types/auth";
+import type { UsuarioAutenticado } from "../types/auth";
+
+export type SeccionApp = "menu" | "pedidos";
 
 type Props = {
   nombreNegocio: string;
+  usuario: UsuarioAutenticado;
+  cerrandoSesion?: boolean;
+  seccionActiva?: SeccionApp;
+  onCambiarSeccion?: (seccion: SeccionApp) => void;
+  onCerrarSesion: () => void;
   children: ReactNode;
 };
 
@@ -34,7 +43,15 @@ function Icono({ tipo }: IconoProps) {
   );
 }
 
-export default function Layout({ nombreNegocio, children }: Props) {
+export default function Layout({
+  nombreNegocio,
+  usuario,
+  cerrandoSesion = false,
+  seccionActiva = "menu",
+  onCambiarSeccion,
+  onCerrarSesion,
+  children,
+}: Props) {
   const fecha = new Intl.DateTimeFormat("es-MX", {
     weekday: "long",
     day: "numeric",
@@ -42,6 +59,8 @@ export default function Layout({ nombreNegocio, children }: Props) {
     year: "numeric",
     timeZone: "America/Cancun",
   }).format(new Date());
+
+  const negocioMostrado = nombreNegocio || usuario.negocio.nombre;
 
   return (
     <div className="app-layout">
@@ -53,7 +72,7 @@ export default function Layout({ nombreNegocio, children }: Props) {
           <div>
             <div className="marca">Assista</div>
             <p className="nombre-negocio">
-              {nombreNegocio || "Cargando negocio…"}
+              {negocioMostrado || "Cargando negocio…"}
             </p>
           </div>
         </div>
@@ -62,45 +81,57 @@ export default function Layout({ nombreNegocio, children }: Props) {
           <p className="etiqueta-navegacion">Espacio de trabajo</p>
 
           <button
-            className="enlace-menu opcion-pendiente"
+            className={`enlace-menu ${seccionActiva === "pedidos" ? "activo" : ""}`}
             type="button"
-            disabled
-            title="Disponible en una próxima entrega"
+            aria-current={seccionActiva === "pedidos" ? "page" : undefined}
+            onClick={() => onCambiarSeccion?.("pedidos")}
           >
             <Icono tipo="pedidos" />
             Pedidos
           </button>
 
-          <a className="enlace-menu activo" href="/" aria-current="page">
+          <button
+            className={`enlace-menu ${seccionActiva === "menu" ? "activo" : ""}`}
+            type="button"
+            aria-current={seccionActiva === "menu" ? "page" : undefined}
+            onClick={() => onCambiarSeccion?.("menu")}
+          >
             <Icono tipo="menu" />
             Administrar menú
-          </a>
+          </button>
         </nav>
 
         <footer className="pie-lateral">
           <div className="usuario-demo">
-            <span className="avatar-usuario">DP</span>
+            <span className="avatar-usuario">
+              {obtenerIniciales(usuario.nombre)}
+            </span>
             <div>
-              <strong>Dueño de prueba</strong>
-              <span>Entorno de demostración</span>
+              <strong>{usuario.nombre}</strong>
+              <span>
+                {formatearRol(usuario.rol)} · {negocioMostrado}
+              </span>
             </div>
           </div>
 
           <button
-            className="enlace-menu opcion-pendiente"
+            className="enlace-menu boton-cerrar-sesion"
             type="button"
-            disabled
-            title="Disponible cuando se integre el inicio de sesión"
+            disabled={cerrandoSesion}
+            onClick={onCerrarSesion}
           >
             <Icono tipo="salir" />
-            Cerrar sesión
+            {cerrandoSesion ? "Cerrando sesión…" : "Cerrar sesión"}
           </button>
         </footer>
       </aside>
 
       <div className="contenido-app">
         <header className="barra-superior">
-          <span>{nombreNegocio || "Assista"} / Administrar menú</span>
+          <span>
+            {negocioMostrado || "Assista"} /{" "}
+            {seccionActiva === "pedidos" ? "Pedidos" : "Administrar menú"}
+          </span>
 
           <span className="fecha-actual">
             <Icono tipo="calendario" />
@@ -113,3 +144,4 @@ export default function Layout({ nombreNegocio, children }: Props) {
     </div>
   );
 }
+

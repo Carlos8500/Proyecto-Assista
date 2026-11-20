@@ -1,10 +1,16 @@
-import "dotenv/config";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import dotenv from "dotenv";
 import { Pool } from "pg";
 
-const connectionString = process.env.DATABASE_URL;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-if (!connectionString) {
-  throw new Error("Falta DATABASE_URL en backend/.env");
-}
+dotenv.config({ path: path.resolve(__dirname, "../.env"), override: true });
+dotenv.config();
 
-export const pool = new Pool({ connectionString });
+const connectionString = process.env.DATABASE_URL?.trim();
+
+export const pool = new Pool({
+  connectionString,
+});

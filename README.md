@@ -16,73 +16,69 @@ conectado a PostgreSQL y preparado para trabajar con un negocio ficticio.
 
 ## Requisitos
 
-- Node.js 22.12 o posterior dentro de la versión 22.x.
+- Node.js 22.12 o posterior dentro de la versión 22.x (o Node.js 24.x).
 - npm, incluido con Node.js.
-- PostgreSQL 18.
-- pgAdmin u otro cliente de PostgreSQL.
+- Docker Desktop (recomendado) o PostgreSQL 18 instalado localmente.
 
-El módulo se ha probado con Node.js 22.15.0.
-
-Para consultar las versiones de Node.js y npm:
+Para consultar las versiones de Node.js, npm y Docker:
 
 ```bash
 node -v
 npm -v
+docker -v
 ```
 
 ## Instalar dependencias
 
-Desde la raíz del repositorio:
+El repositorio utiliza npm workspaces para unificar las dependencias de `backend/` y `frontend/`. Desde la raíz del repositorio:
 
 ```bash
-cd backend
-npm ci
-cd ../frontend
-npm ci
-cd ..
+npm install
 ```
 
 ## Preparar la base de datos local
 
-Crear una base de datos llamada `assista`. Desde una conexión a
-PostgreSQL, se puede ejecutar:
+### Opción A: Con Docker (recomendada, sin pgAdmin)
+
+El archivo `docker-compose.yml` levanta un contenedor `postgres:18-alpine` en el puerto `5435` (para no chocar con instalaciones locales de PostgreSQL en los puertos `5432`/`5433`) y **ejecuta automáticamente todas las migraciones y seeds** en el primer arranque:
+
+```bash
+npm run db:up
+```
+
+Comandos útiles para administrar el contenedor:
+- `npm run db:up` (`docker compose up -d`): inicia la base de datos.
+- `npm run db:down` (`docker compose down`): detiene el contenedor conservando los datos.
+- `npm run db:reset` (`docker compose down -v && docker compose up -d`): borra el volumen y vuelve a ejecutar desde cero las migraciones y seeds.
+
+### Opción B: Manual con PostgreSQL local / pgAdmin
+
+Crear una base de datos llamada `assista`:
 
 ```sql
 CREATE DATABASE assista;
 ```
 
-Abrir un Query Tool conectado a la nueva base `assista` y ejecutar
-el contenido de estos archivos en este orden:
+Ejecutar el contenido de estos archivos en este orden:
 
 1. `backend/db/migrations/001_crear_negocios_y_productos.sql`
-2. `backend/db/seeds/001_mesa_clara.sql`
-
-La migración crea las tablas y se ejecuta una vez sobre la base vacía.
-El seed registra el negocio ficticio Mesa Clara. Los productos se
-agregan desde la interfaz.
-
-Consultar el identificador asignado al negocio:
-
-```sql
-SELECT id, nombre
-FROM negocios
-WHERE nombre = 'Mesa Clara';
-```
+2. `backend/db/migrations/002_crear_usuarios_y_sesiones.sql`
+3. `backend/db/migrations/003_crear_pedidos.sql`
+4. `backend/db/seeds/001_mesa_clara.sql`
+5. `backend/db/seeds/002_usuarios_prueba.sql`
 
 ## Configurar la conexión
 
-Copiar `backend/.env.example` como `backend/.env` y completar:
+Copiar `backend/.env.example` como `backend/.env`:
 
 ```dotenv
-DATABASE_URL=postgresql://postgres:TU_PASSWORD@localhost:5432/assista
+DATABASE_URL=postgresql://postgres:assista2026@localhost:5435/assista
 DEMO_NEGOCIO_ID=1
+CODIGO_INVITACION=MESA-CLARA-2026
+ASISTENTE_API_TOKEN=cambia_este_token_secreto_telnyx_2026
 ```
 
-Ajustar el usuario, la contraseña y el puerto a la instalación local.
-Si la contraseña contiene caracteres especiales, deben codificarse
-para utilizarlos dentro de la URL.
-
-Asignar a `DEMO_NEGOCIO_ID` el identificador obtenido para Mesa Clara.
+Si usas Docker (`npm run db:up`), la `DATABASE_URL` anterior funciona directamente sin cambios. Si usas PostgreSQL local sin Docker, ajusta el usuario, la contraseña y el puerto (`5432`).
 
 El archivo `.env` contiene la configuración local y está excluido
 del repositorio mediante `.gitignore`.
@@ -94,16 +90,18 @@ Mantener PostgreSQL activo y abrir dos terminales en la raíz del proyecto.
 En la primera terminal, iniciar el backend:
 
 ```bash
-cd backend
-npm run dev
+npm run dev:backend
 ```
+
+(O bien `cd backend && npm run dev`).
 
 En la segunda terminal, iniciar el frontend:
 
 ```bash
-cd frontend
-npm run dev
+npm run dev:frontend
 ```
+
+(O bien `cd frontend && npm run dev`).
 
 Abrir la dirección que indique Vite, normalmente:
 
@@ -126,16 +124,19 @@ productos registrados, mostrará el mensaje correspondiente al menú vacío.
 Los precios se almacenan como enteros en centavos. Por ejemplo,
 $85.50 MXN se guarda como `8550`.
 
-## Alcance de la demostración
+## Alcance y autenticación
 
-El negocio se selecciona mediante `DEMO_NEGOCIO_ID` en el backend.
-Cada producto está asociado a un negocio mediante `negocio_id`.
+Cada producto y cada usuario están asociados a un negocio mediante `negocio_id`.
+- **Dueño (`dueno`)**: puede consultar, crear, editar y cambiar la disponibilidad de los productos de su negocio.
+- **Empleado (`empleado`)**: acceso de solo lectura al menú de su negocio.
+- **Registro público (`/api/auth/register`)**: restringido exclusivamente al rol `empleado` y protegido mediante `CODIGO_INVITACION` para vincularse al negocio configurado en `DEMO_NEGOCIO_ID`.
 
-La autenticación y los permisos por usuario se integrarán posteriormente.
-Los accesos a Pedidos y Cerrar sesión aparecen deshabilitados.
+Cuentas de prueba incluidas en `002_usuarios_prueba.sql`:
+- Dueña (Mesa Clara): `lucia.garcia` / `MesaClara2026`
+- Empleado (Mesa Clara): `carlos.mendez` / `MesaClara2026`
+- Dueño (Comedor Reforma): `marco.silva` / `Reforma2026`
 
-Cada integrante utiliza su propia base local. Los productos capturados
-desde la interfaz se guardan en la base a la que apunta su backend.
+Cada integrante utiliza su propia base local. Los productos y usuarios se guardan directamente en PostgreSQL.
 
 ## Comprobar la API
 
@@ -170,13 +171,30 @@ http://localhost:3000/api/productos
 Devuelve un arreglo con los productos del negocio configurado.
 Si el menú está vacío, devuelve `[]`.
 
-## Verificar el frontend
+## Integración con Telnyx Voice AI Agent (Webhook Tools)
 
-Desde `frontend/`, ejecutar:
+El backend expone dos rutas para los **Webhook Tools** del agente telefónico, autenticadas con el encabezado `Authorization: Bearer <ASISTENTE_API_TOKEN>`:
+
+1. **`GET /api/asistente/menu`** (Tool `consultar_menu`):
+   - Devuelve el nombre del restaurante y únicamente los productos con `disponible = true`, incluyendo `id`, `nombre`, `descripcion`, `precio` formateado (`125.00 MXN`) y `precioCentavos`.
+2. **`POST /api/asistente/pedidos`** (Tool `crear_pedido`):
+   - Recibe `clienteNombre`, `clienteTelefono`, `tipoEntrega` (`recoger` | `domicilio`), `direccionEntrega` (obligatoria si es `domicilio`), `notas` e `items` (`[{ productoId, cantidad, notas }]`).
+   - Lee `x-telnyx-call-control-id` para garantizar idempotencia si Telnyx reintenta el webhook.
+   - Valida disponibilidad y calcula `total_centavos` directamente desde PostgreSQL dentro de una transacción.
+
+Para gestión del personal desde el panel web (autenticado con cookie `HttpOnly` `assista_sid`):
+- `GET /api/pedidos?estado=pendiente,en_preparacion&limite=50`
+- `POST /api/pedidos` (alta manual de pedidos)
+- `PATCH /api/pedidos/:id` (`{ "estado": "en_preparacion" | "listo" | "entregado" | "cancelado" }`)
+
+## Verificar el proyecto
+
+Desde la raíz del repositorio (o dentro de cada paquete), ejecutar:
 
 ```bash
 npm run build
 npm run lint
+npm test
 ```
 
 ## Estructura del proyecto

@@ -1,31 +1,453 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import express from "express";
-import { pool } from "./db";
+import type { Request, Response } from "express";
+import {
+  buildLogoutCookie,
+  buildSessionCookie,
+  generarTokenSesion,
+  hashPassword,
+  normalizarUsername,
+  parseCookies,
+  puedeAdministrarMenu,
+  SESSION_COOKIE_NAME,
+  SESSION_DURATION_REMEMBER_MS,
+  SESSION_DURATION_SHORT_MS,
+  validarCorreo,
+  validarRequisitosPassword,
+  validarUsername,
+  verifyPassword,
+} from "./auth.ts";
+import type { RolUsuario, UsuarioSesion } from "./auth.ts";
+import { crearRouterAsistente } from "./asistente.ts";
+import { obtenerNegocioConfiguradoId } from "./config.ts";
+import { pool } from "./db.ts";
+import { crearRouterPedidos } from "./pedidos.ts";
+import { crearRouterTelefonia } from "./telefonia.ts";
 
-const app = express();
-const port = 3000;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
+export const app = express();
+const port = Number(process.env.PORT) || 3000;
+
+app.set("trust proxy", 1);
 app.use(express.json());
+
+function esContextoSeguro(request: Request): boolean {
+  const proto = request.headers["x-forwarded-proto"];
+  if (typeof proto === "string" && proto.includes("https")) {
+    return true;
+  }
+  return request.secure === true;
+}
+
+function extraerTokenSesion(request: Request): string | null {
+  const cookies = parseCookies(request.headers.cookie);
+  if (cookies[SESSION_COOKIE_NAME]) {
+    return cookies[SESSION_COOKIE_NAME];
+  }
+
+  return null;
+}
+
+async function obtenerUsuarioDeSesion(
+  request: Request,
+): Promise<UsuarioSesion | null> {
+  const token = extraerTokenSesion(request);
+  if (!token) {
+    return null;
+  }
+
+  const { rows } = await pool.query(
+    `SELECT u.id, u.nombre, u.username, u.correo, u.rol,
+            n.id AS "negocioId", n.nombre AS "negocioNombre"
+     FROM sesiones s
+     JOIN usuarios u ON u.id = s.usuario_id
+     JOIN negocios n ON n.id = u.negocio_id
+     WHERE s.token = $1 AND s.expira_en > now()`,
+    [token],
+  );
+
+  if (rows.length === 0) {
+    return null;
+  }
+
+  const fila = rows[0];
+  return {
+    id: Number(fila.id),
+    nombre: String(fila.nombre),
+    username: String(fila.username),
+    correo: String(fila.correo),
+    rol: fila.rol as RolUsuario,
+    negocio: {
+      id: Number(fila.negocioId),
+      nombre: String(fila.negocioNombre),
+    },
+  };
+}
+
+async function iniciarSesionUsuario(
+  response: Response,
+  request: Request,
+  usuario: UsuarioSesion,
+  recordarme: boolean,
+): Promise<void> {
+  const token = generarTokenSesion();
+  const duracionMs = recordarme
+    ? SESSION_DURATION_REMEMBER_MS
+    : SESSION_DURATION_SHORT_MS;
+  const expiraEn = new Date(Date.now() + duracionMs);
+
+  await pool.query(
+    `INSERT INTO sesiones (token, usuario_id, expira_en)
+     VALUES ($1, $2, $3)`,
+    [token, usuario.id, expiraEn],
+  );
+
+  response.setHeader(
+    "Set-Cookie",
+    buildSessionCookie(token, duracionMs, esContextoSeguro(request)),
+  );
+}
+
+const DEFAULT_INVITE_CODE = "MESA-CLARA-2026";
+
+function obtenerCodigoInvitacionEsperado(): string {
+  const configurado = process.env.CODIGO_INVITACION?.trim();
+  return configurado && configurado.length > 0
+    ? configurado
+    : DEFAULT_INVITE_CODE;
+}
 
 app.get("/api/health", (_request, response) => {
   response.json({ message: "Backend de Assista conectado" });
 });
 
-app.get("/api/negocio", async (_request, response) => {
-  const negocioId = Number(process.env.DEMO_NEGOCIO_ID);
+app.get("/api/auth/check-username", async (request, response) => {
+  const raw = typeof request.query.username === "string" ? request.query.username : "";
+  const username = normalizarUsername(raw);
 
-  if (!Number.isInteger(negocioId) || negocioId < 1) {
-    response.status(500).json({ message: "Configura DEMO_NEGOCIO_ID" });
+  if (!validarUsername(username)) {
+    response.json({ disponible: false, valido: false });
     return;
   }
 
   try {
     const { rows } = await pool.query(
-      "SELECT id, nombre FROM negocios WHERE id = $1",
-      [negocioId],
+      "SELECT id, username, correo FROM usuarios WHERE LOWER(username) = LOWER($1)",
+      [username],
+    );
+    response.json({ disponible: rows.length === 0, valido: true });
+  } catch (error) {
+    console.error("Error al verificar usuario:", error);
+    response.status(500).json({ message: "No se pudo verificar el usuario" });
+  }
+});
+
+app.post("/api/auth/login", async (request, response) => {
+  const { username, password, recordarme } = request.body ?? {};
+  const identificador =
+    typeof username === "string" ? username.trim().toLowerCase() : "";
+  const clave = typeof password === "string" ? password : "";
+
+  if (!identificador || !clave) {
+    response.status(400).json({
+      message: "Ingresa tu nombre de usuario y contraseña.",
+    });
+    return;
+  }
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT u.id, u.nombre, u.username, u.correo,
+              u.password_hash AS "passwordHash", u.rol,
+              n.id AS "negocioId", n.nombre AS "negocioNombre"
+       FROM usuarios u
+       JOIN negocios n ON n.id = u.negocio_id
+       WHERE LOWER(u.username) = LOWER($1) OR LOWER(u.correo) = LOWER($1)`,
+      [identificador],
     );
 
     if (rows.length === 0) {
-      response.status(404).json({ message: "Negocio de prueba no encontrado" });
+      response.status(401).json({
+        message: "Usuario o contraseña incorrectos.",
+      });
+      return;
+    }
+
+    const fila = rows[0];
+    const coincide = await verifyPassword(String(fila.passwordHash), clave);
+
+    if (!coincide) {
+      response.status(401).json({
+        message: "Usuario o contraseña incorrectos.",
+      });
+      return;
+    }
+
+    const usuario: UsuarioSesion = {
+      id: Number(fila.id),
+      nombre: String(fila.nombre),
+      username: String(fila.username),
+      correo: String(fila.correo),
+      rol: fila.rol as RolUsuario,
+      negocio: {
+        id: Number(fila.negocioId),
+        nombre: String(fila.negocioNombre),
+      },
+    };
+
+    await iniciarSesionUsuario(
+      response,
+      request,
+      usuario,
+      Boolean(recordarme),
+    );
+
+    response.json(usuario);
+  } catch (error) {
+    console.error("Error en inicio de sesión:", error);
+    response.status(500).json({
+      message: "No se pudo iniciar sesión. Intenta de nuevo.",
+    });
+  }
+});
+
+app.post("/api/auth/register", async (request, response) => {
+  const {
+    nombre,
+    username,
+    correo,
+    password,
+    codigoInvitacion,
+    rol,
+    negocioId,
+  } = request.body ?? {};
+
+  if (rol !== undefined && rol !== "empleado") {
+    response.status(403).json({
+      message:
+        "No está permitido autoasignarse el rol de dueño en el registro público.",
+    });
+    return;
+  }
+
+  if (negocioId !== undefined) {
+    response.status(403).json({
+      message:
+        "No está permitido vincularse libremente a un negocio sin autorización.",
+    });
+    return;
+  }
+
+  const nombreLimpio = typeof nombre === "string" ? nombre.trim() : "";
+  const usernameLimpio =
+    typeof username === "string" ? normalizarUsername(username) : "";
+  const correoLimpio =
+    typeof correo === "string" ? correo.trim().toLowerCase() : "";
+  const clave = typeof password === "string" ? password : "";
+  const codigoLimpio =
+    typeof codigoInvitacion === "string" ? codigoInvitacion.trim() : "";
+
+  let sesionActual: UsuarioSesion | null = null;
+  try {
+    sesionActual = await obtenerUsuarioDeSesion(request);
+  } catch (error) {
+    console.error("Error al verificar sesión en registro:", error);
+    response.status(500).json({
+      message: "No se pudo verificar la autorización para el registro.",
+    });
+    return;
+  }
+
+  const autorizadoPorDueno = sesionActual?.rol === "dueno";
+  const codigoEsperado = obtenerCodigoInvitacionEsperado();
+  const autorizadoPorCodigo =
+    codigoLimpio.length > 0 && codigoLimpio === codigoEsperado;
+
+  if (!autorizadoPorDueno && !autorizadoPorCodigo) {
+    response.status(403).json({
+      message:
+        "Se requiere un código de invitación válido proporcionado por el dueño del negocio.",
+    });
+    return;
+  }
+
+  const negocioDestino = autorizadoPorDueno
+    ? sesionActual!.negocio.id
+    : obtenerNegocioConfiguradoId();
+  const rolAsignado: RolUsuario = "empleado";
+
+  if (!nombreLimpio || nombreLimpio.length > 120) {
+    response.status(400).json({
+      message: "El nombre completo debe tener entre 1 y 120 caracteres.",
+    });
+    return;
+  }
+
+  if (!validarUsername(usernameLimpio)) {
+    response.status(400).json({
+      message:
+        "El nombre de usuario debe tener entre 3 y 60 caracteres (letras, números, puntos o guiones).",
+    });
+    return;
+  }
+
+  if (!validarCorreo(correoLimpio)) {
+    response.status(400).json({
+      message: "Ingresa un correo electrónico válido.",
+    });
+    return;
+  }
+
+  const validacionClave = validarRequisitosPassword(clave);
+  if (!validacionClave.esValida) {
+    response.status(400).json({
+      message:
+        "La contraseña debe tener al menos 8 caracteres, una mayúscula y un número.",
+    });
+    return;
+  }
+
+  try {
+    const existentes = await pool.query(
+      "SELECT id, username, correo FROM usuarios WHERE LOWER(username) = LOWER($1) OR LOWER(correo) = LOWER($2)",
+      [usernameLimpio, correoLimpio],
+    );
+
+    if (existentes.rows.length > 0) {
+      const conflicto = existentes.rows[0];
+      if (String(conflicto.username).toLowerCase() === usernameLimpio) {
+        response.status(409).json({
+          message: "Ese nombre de usuario ya está en uso.",
+        });
+        return;
+      }
+      response.status(409).json({
+        message: "Ese correo electrónico ya está registrado.",
+      });
+      return;
+    }
+
+    const negocioRes = await pool.query(
+      "SELECT id, nombre FROM negocios WHERE id = $1",
+      [negocioDestino],
+    );
+
+    if (negocioRes.rows.length === 0) {
+      response.status(400).json({
+        message: "El negocio configurado para la invitación no existe.",
+      });
+      return;
+    }
+
+    const passwordHash = await hashPassword(clave);
+    const { rows } = await pool.query(
+      `INSERT INTO usuarios (negocio_id, nombre, username, correo, password_hash, rol)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, negocio_id AS "negocioId", nombre, username, correo, rol`,
+      [
+        negocioDestino,
+        nombreLimpio,
+        usernameLimpio,
+        correoLimpio,
+        passwordHash,
+        rolAsignado,
+      ],
+    );
+
+    const creado = rows[0];
+    const negocio = negocioRes.rows[0];
+
+    const usuario: UsuarioSesion = {
+      id: Number(creado.id),
+      nombre: String(creado.nombre),
+      username: String(creado.username),
+      correo: String(creado.correo),
+      rol: "empleado",
+      negocio: {
+        id: Number(negocio.id),
+        nombre: String(negocio.nombre),
+      },
+    };
+
+    await iniciarSesionUsuario(
+      response,
+      request,
+      usuario,
+      true,
+    );
+
+    response.status(201).json(usuario);
+  } catch (error) {
+    if ((error as { code?: string })?.code === "23505") {
+      response.status(409).json({
+        message: "El nombre de usuario o correo electrónico ya está registrado.",
+      });
+      return;
+    }
+    console.error("Error al registrar usuario:", error);
+    response.status(500).json({
+      message: "No se pudo crear la cuenta. Intenta nuevamente.",
+    });
+  }
+});
+
+app.get("/api/auth/me", async (request, response) => {
+  try {
+    const usuario = await obtenerUsuarioDeSesion(request);
+
+    if (!usuario) {
+      if (request.query.silent === "1") {
+        response.json({ autenticado: false, usuario: null });
+        return;
+      }
+      response.status(401).json({ message: "No hay una sesión activa" });
+      return;
+    }
+
+    response.json(usuario);
+  } catch (error) {
+    console.error("Error al consultar la sesión:", error);
+    response.status(500).json({ message: "No se pudo verificar la sesión" });
+  }
+});
+
+app.post("/api/auth/logout", async (request, response) => {
+  try {
+    const token = extraerTokenSesion(request);
+    if (token) {
+      await pool.query("DELETE FROM sesiones WHERE token = $1", [token]);
+    }
+
+    response.setHeader(
+      "Set-Cookie",
+      buildLogoutCookie(esContextoSeguro(request)),
+    );
+    response.json({ message: "Sesión cerrada correctamente" });
+  } catch (error) {
+    console.error("Error al cerrar sesión:", error);
+    response.status(500).json({ message: "No se pudo cerrar la sesión" });
+  }
+});
+
+app.get("/api/negocio", async (request, response) => {
+  try {
+    const sesion = await obtenerUsuarioDeSesion(request);
+    if (!sesion) {
+      response.status(401).json({ message: "Inicia sesión para continuar" });
+      return;
+    }
+
+    const { rows } = await pool.query(
+      "SELECT id, nombre FROM negocios WHERE id = $1",
+      [sesion.negocio.id],
+    );
+
+    if (rows.length === 0) {
+      response.status(404).json({ message: "Negocio no encontrado" });
       return;
     }
 
@@ -36,22 +458,21 @@ app.get("/api/negocio", async (_request, response) => {
   }
 });
 
-app.get("/api/productos", async (_request, response) => {
-  const negocioId = Number(process.env.DEMO_NEGOCIO_ID);
-
-  if (!Number.isInteger(negocioId) || negocioId < 1) {
-    response.status(500).json({ message: "Configura DEMO_NEGOCIO_ID" });
-    return;
-  }
-
+app.get("/api/productos", async (request, response) => {
   try {
+    const sesion = await obtenerUsuarioDeSesion(request);
+    if (!sesion) {
+      response.status(401).json({ message: "Inicia sesión para continuar" });
+      return;
+    }
+
     const { rows } = await pool.query(
       `SELECT id, nombre, descripcion,
               precio_centavos AS "precioCentavos", disponible
        FROM productos
        WHERE negocio_id = $1
        ORDER BY id`,
-      [negocioId],
+      [sesion.negocio.id],
     );
 
     response.json(rows);
@@ -62,10 +483,24 @@ app.get("/api/productos", async (_request, response) => {
 });
 
 app.post("/api/productos", async (request, response) => {
-  const negocioId = Number(process.env.DEMO_NEGOCIO_ID);
+  let sesion: UsuarioSesion | null = null;
+  try {
+    sesion = await obtenerUsuarioDeSesion(request);
+  } catch (error) {
+    console.error("Error al verificar sesión:", error);
+    response.status(500).json({ message: "No se pudo verificar la sesión" });
+    return;
+  }
 
-  if (!Number.isInteger(negocioId) || negocioId < 1) {
-    response.status(500).json({ message: "Configura DEMO_NEGOCIO_ID" });
+  if (!sesion) {
+    response.status(401).json({ message: "Inicia sesión para continuar" });
+    return;
+  }
+
+  if (!puedeAdministrarMenu(sesion.rol)) {
+    response.status(403).json({
+      message: "Solo el dueño del negocio puede agregar productos al menú",
+    });
     return;
   }
 
@@ -106,7 +541,7 @@ app.post("/api/productos", async (request, response) => {
        VALUES ($1, $2, $3, $4)
        RETURNING id, nombre, descripcion,
                  precio_centavos AS "precioCentavos", disponible`,
-      [negocioId, nombreLimpio, descripcionLimpia, precioCentavos],
+      [sesion.negocio.id, nombreLimpio, descripcionLimpia, precioCentavos],
     );
 
     response.status(201).json(rows[0]);
@@ -117,13 +552,28 @@ app.post("/api/productos", async (request, response) => {
 });
 
 app.patch("/api/productos/:id", async (request, response) => {
-  const negocioId = Number(process.env.DEMO_NEGOCIO_ID);
-  const productoId = Number(request.params.id);
-
-  if (!Number.isInteger(negocioId) || negocioId < 1) {
-    response.status(500).json({ message: "Configura DEMO_NEGOCIO_ID" });
+  let sesion: UsuarioSesion | null = null;
+  try {
+    sesion = await obtenerUsuarioDeSesion(request);
+  } catch (error) {
+    console.error("Error al verificar sesión:", error);
+    response.status(500).json({ message: "No se pudo verificar la sesión" });
     return;
   }
+
+  if (!sesion) {
+    response.status(401).json({ message: "Inicia sesión para continuar" });
+    return;
+  }
+
+  if (!puedeAdministrarMenu(sesion.rol)) {
+    response.status(403).json({
+      message: "Solo el dueño del negocio puede modificar productos del menú",
+    });
+    return;
+  }
+
+  const productoId = Number(request.params.id);
 
   if (!Number.isInteger(productoId) || productoId < 1 || productoId > 2_147_483_647) {
     response.status(400).json({ message: "ID de producto inválido" });
@@ -181,7 +631,7 @@ app.patch("/api/productos/:id", async (request, response) => {
                  precio_centavos AS "precioCentavos", disponible`,
       [
         productoId,
-        negocioId,
+        sesion.negocio.id,
         nombre?.trim() ?? null,
         descripcion?.trim() ?? null,
         precioCentavos ?? null,
@@ -201,6 +651,22 @@ app.patch("/api/productos/:id", async (request, response) => {
   }
 });
 
-app.listen(port, () => {
-  console.log(`API de Assista en http://localhost:${port}`);
-});
+app.use("/api/pedidos", crearRouterPedidos(obtenerUsuarioDeSesion));
+app.use("/api/asistente", crearRouterAsistente());
+app.use("/api/telefonia", crearRouterTelefonia());
+
+const frontendDistPath = path.resolve(__dirname, "../../frontend/dist");
+if (fs.existsSync(frontendDistPath)) {
+  app.use(express.static(frontendDistPath));
+  app.get("/{*splat}", (_request, response) => {
+    response.sendFile(path.join(frontendDistPath, "index.html"));
+  });
+}
+
+if (process.env.NODE_ENV !== "test") {
+  app.listen(port, "0.0.0.0", () => {
+    console.log(`API de Assista en http://0.0.0.0:${port}`);
+  });
+}
+
+
